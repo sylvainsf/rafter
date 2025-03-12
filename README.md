@@ -1,14 +1,18 @@
 # Retrieval Augmented Fine-Tuning (RAFT) for Radius: An Agentic, Azure-Powered Implementation
 
-This document details an implementation of the Retrieval Augmented Fine-Tuning (RAFT) framework, inspired by Cedric Vidal's blog post, "RAFT: A new way to teach LLMs to be better at RAG." We aim to build a highly accurate, reliable, and configurable LLM specifically for the open-source Radius project (github.com/radius-project/radius). Our approach is agentic, leveraging Azure AI services. It handles both the Radius OpenAPI specification and Golang tests, with a strong emphasis on safety through a system for handling potentially destructive actions. The primary workflow is implemented in Python, with a supporting (simplified) data ingestion agent in Go. Configuration parameters (max tokens, batch sizes, epochs, checkpoints) are included to handle complex APIs.
+This project is an implementation of the Retrieval Augmented Fine-Tuning (RAFT) framework, inspired by Cedric Vidal's blog post, ["RAFT: A new way to teach LLMs to be better at RAG."](https://techcommunity.microsoft.com/blog/aiplatformblog/raft-a-new-way-to-teach-llms-to-be-better-at-rag/4084674) We aim to build a highly accurate, reliable, and configurable LLM specifically for the open-source Radius project (github.com/radius-project/radius). Our approach is agentic, leveraging Azure AI services. It currently handles both the Radius OpenAPI specification and Golang tests, with a strong emphasis on safety through a system for handling potentially destructive actions. The primary workflow is implemented in Python, with a supporting (simplified) data ingestion agent in Go. Configuration parameters (max tokens, batch sizes, epochs, checkpoints) are included to handle complex APIs.
 
-## The Problem: LLMs, Hallucinations, and Destructive Actions with Radius
+Once the concept is proven out the goal is to modularize the ingesters and validators for various types of sources, even beyond languages and APIs to include things like textbooks with test/answer keys or any other form of structured assertions on a domain that could be used in this workflow.
+
+## The Problem: LLMs, Hallucinations, and Destructive Actions
 
 Large Language Models (LLMs), while powerful, are prone to hallucination – generating plausible but incorrect information. In the context of Radius, which manages infrastructure and application deployments, a hallucinated response suggesting a *destructive* action (like deleting a resource group or misconfiguring a deployment) is a serious and unacceptable risk. This implementation directly addresses both the accuracy of the LLM and the safety of its generated responses.
 
-## Our Goal: A Safe and Accurate Radius Expert LLM, Inspired by RAFT
+## Our Goal: A Safe and Accurate Expert LLM, Inspired by RAFT
 
 Our goal is to build an LLM that acts as an expert on the Radius API. Its knowledge is firmly grounded in two authoritative sources: the project's OpenAPI specification and its Golang tests. We aim to achieve the accuracy benefits outlined in the RAFT approach while also incorporating a robust safety mechanism to prevent destructive actions.
+
+Eventually the Expert LLM of the API could be part of a higher abstraction workflow as a validator for RAFT on Radius Bicep.
 
 ## Introducing Our Agentic RAFT Implementation
 
@@ -32,103 +36,6 @@ We use specialized, independently tuned *agents* for each source type and for va
 
 *   **OpenAPI Ingestion Agent (Python):** This agent parses the Radius OpenAPI specification file. It extracts relevant information (endpoints, schemas, parameters, descriptions) and transforms this information into question-answer pairs suitable for fine-tuning the LLM. It uses a carefully crafted prompt to guide an LLM in this transformation process.
 
-    ```python
-    class OpenAPI_IngestionAgent:
-        def __init__(self, openapi_spec_path, max_tokens=256):
-            self.openapi_spec_path = openapi_spec_path
-            self.max_tokens = max_tokens
-            with open(self.openapi_spec_path, 'r') as f:
-                try:
-                    self.spec = yaml.safe_load(f)
-                except yaml.YAMLError as exc:
-                    print(f"Error loading OpenAPI spec: {exc}")
-                    self.spec = None
-
-        def ingest(self, batch_size=10):
-            if self.spec is None:
-                return []
-
-            extracted_data = []
-            operations = []  # Collect operations first
-            for path, methods in self.spec.get('paths', {}).items():
-                for method, details in methods.items():
-                    operations.append((path, method, details))
-
-            for i in range(0, len(operations), batch_size):
-                batch = operations[i:i + batch_size]
-                for path, method, details in batch:
-                    operation_id = details.get('operationId', '')
-                    summary = details.get('summary', '')
-                    description = details.get('description', '')
-                    params = []
-                    for param in details.get('parameters', []):
-                        params.append(f"{param.get('name', '')} ({param.get('in', '')}, {param.get('schema', {}).get('type', '')})")
-
-                    prompt = f"""
-                    You are an expert in extracting information from OpenAPI specifications.
-                    Given the following OpenAPI details for the '{method.upper()}' operation on '{path}':
-
-                    Operation ID: {details.get('operationId', 'N/A')}
-                    Summary: {details.get('summary', 'N/A')}
-                    Description: {details.get('description', 'N/A')}
-                    Parameters: {details.get('parameters', [])}
-                    Responses: {details.get('responses', {})}
-
-                    Generate a question-answer pair about this API operation. The question should be
-                    a realistic user query. The answer should be concise and accurate, based *solely*
-                    on the provided information.
-
-                    Consider:
-                    * How-to questions
-                    * What-is questions
-                    * Parameter usage questions
-                    * Error handling questions
-                    * Example request questions
-
-                    Output in JSON format:
-                    {{
-                        "question": "<question>",
-                        "answer": "<answer>"
-                    }}
-                    """
-                    try:
-                        response = openai.ChatCompletion.create(
-                            engine="gpt-35-turbo", # Or your deployment name
-                            messages=[
-                                {"role": "system", "content": "You are a helpful assistant specializing in OpenAPI specifications."},
-                                {"role": "user", "content": prompt}
-                            ],
-                            temperature=0.2,
-                            max_tokens=self.max_tokens,
-                        )
-                        qa_pair = json.loads(response['choices'][0]['message']['content'])
-                        question = qa_pair["question"]
-                        answer = qa_pair["answer"]
-
-                        data_entry = {
-                            "messages": [
-                                {"role": "system", "content": "You are a helpful assistant that provides information about the Radius API."},
-                                {"role": "user", "content": question},
-                                {"role": "assistant", "content": answer}
-                            ],
-                            "source": "OpenAPI",
-                            "operation_id": operation_id,
-                            "path": path,
-                            "method": method
-                        }
-
-                        if is_destructive(question) or is_destructive(answer):
-                            data_entry["flagged"] = "true"
-                            data_entry["reason"] = "Potential destructive action keywords detected."
-                        extracted_data.append(data_entry)
-                    except (json.JSONDecodeError, KeyError, openai.error.RateLimitError, openai.error.APIError, openai.error.ServiceUnavailableError) as e:
-                        print(f"Error processing OpenAPI response: {e}")
-                        if isinstance(e, openai.error.RateLimitError):
-                            time.sleep(60)  # Simple retry
-
-            return extracted_data
-    ```
-
 *   **Golang Test Ingestion Agent (Go):** This is a Go program that reads Go test files and extracts basic information (test function names and a placeholder answer). A *full* implementation would use the Go AST (Abstract Syntax Tree) and an LLM for more sophisticated analysis, but this simplified version demonstrates the principle and the interaction with the Python workflow
 
     **To Compile the Go Agent:**
@@ -139,127 +46,15 @@ We use specialized, independently tuned *agents* for each source type and for va
     4.  This will create an executable file named `main` (or `main.exe` on Windows). This is the `GO_AGENT_EXECUTABLE` that the Python code will use.
 
 *   **OpenAPI Validation Agent (Python):** This agent implements the *fast-model validation* step, a key component inspired by the RAFT paper. It uses a smaller, faster LLM (e.g., `gpt-35-turbo`) to check the correctness of generated answers against the original context.
-
-    ```python
-    class OpenAPI_ValidationAgent:
-        def __init__(self, fast_model_engine="gpt-35-turbo", max_tokens=128):
-            self.fast_model_engine = fast_model_engine
-            self.max_tokens = max_tokens
-
-        def validate(self, question, context, generated_answer):
-            """Validates the generated answer using cosine similarity."""
-            context_embedding = get_openai_embedding(context)
-            generated_answer_embedding = get_openai_embedding(generated_answer)
-            fast_model_answer = self.get_fast_model_response(question, context)
-            fast_model_answer_embedding = get_openai_embedding(fast_model_answer)
-
-            similarity_to_context = cosine_similarity(generated_answer_embedding, context_embedding)
-            similarity_to_fast_model = cosine_similarity(generated_answer_embedding, fast_model_answer_embedding)
-
-            return similarity_to_context, similarity_to_fast_model
-
-        def get_fast_model_response(self, question, context):
-            """Gets a response from the fast model."""
-            prompt = f"""
-            You are a validation agent for an LLM trained on the Radius API.  Your task is to
-            provide a concise and accurate answer to the user's question *based solely on the
-            provided context*.  Do not hallucinate.
-
-            Context:
-            {context}
-
-            Question:
-            {question}
-
-            Provide a brief, factual answer:
-            """
-            try:
-                openai.api_type = "azure"
-                openai.api_key = AZURE_OPENAI_KEY
-                openai.api_base = AZURE_OPENAI_ENDPOINT
-                openai.api_version = AZURE_OPENAI_VERSION
-                response = openai.ChatCompletion.create(
-                    engine=self.fast_model_engine,
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant that provides information based on the provided context."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=self.max_tokens,
-                )
-                return response['choices'][0]['message']['content']
-            except (openai.error.RateLimitError, openai.error.APIError, openai.error.ServiceUnavailableError) as e:
-                print(f"Error in fast model response: {e}")
-                if isinstance(e, openai.error.RateLimitError):
-                    time.sleep(60)  # Simple retry
-                return ""
-
-    ```
-
 *   **Golang Validation Agent (Python):** This agent is similar to the OpenAPI validation agent, but its prompt is tailored to understand the context derived from Go tests.
-
-    ```python
-    class Golang_ValidationAgent:
-        def __init__(self, fast_model_engine="gpt-35-turbo", max_tokens=128):
-            self.fast_model_engine = fast_model_engine
-            self.max_tokens = max_tokens
-
-        def validate(self, question, context, generated_answer):
-            """Validates, accounting for Go test context."""
-            context_embedding = get_openai_embedding(context)
-            generated_answer_embedding = get_openai_embedding(generated_answer)
-            fast_model_answer = self.get_fast_model_response(question, context)
-            fast_model_answer_embedding = get_openai_embedding(fast_model_answer)
-
-            similarity_to_context = cosine_similarity(generated_answer_embedding, context_embedding)
-            similarity_to_fast_model = cosine_similarity(generated_answer_embedding, fast_model_answer_embedding)
-
-            return similarity_to_context, similarity_to_fast_model
-
-        def get_fast_model_response(self, question, context):
-            """Gets response from fast model; prompt tailored for Go tests."""
-            prompt = f"""
-            You are a validation agent for an LLM. Your task is to provide a concise answer
-            to the user's question, *based solely on the provided context, from a Golang test*.
-            Do not hallucinate. The context may include code snippets and test assertions.
-
-            Context (from Go test):
-            {context}
-
-            Question:
-            {question}
-
-            Provide a brief, factual answer:
-            """
-            try:
-                openai.api_type = "azure"
-                openai.api_key = AZURE_OPENAI_KEY
-                openai.api_base = AZURE_OPENAI_ENDPOINT
-                openai.api_version = AZURE_OPENAI_VERSION
-                response = openai.ChatCompletion.create(
-                    engine=self.fast_model_engine,
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant. Provide information based on context"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=self.max_tokens,
-                )
-                return response['choices'][0]['message']['content']
-
-            except (openai.error.RateLimitError, openai.error.APIError, openai.error.ServiceUnavailableError) as e:
-                print(f"Error in fast model response (Golang): {e}")
-                if isinstance(e, openai.error.RateLimitError):
-                    time.sleep(60)
-                return ""
-    ```
-
 *   **Agent Tuning:** Each agent is independently tuned for its specific task (e.g., adjusting `max_tokens`).
 *   **User-Specified Sources:** The user provides the paths to the Radius OpenAPI specification file and the directory containing the Go tests.
 
 ## 3. Retrieval System (Azure AI Search):
 
 *   **Vector Database (Azure AI Search):** We use Azure AI Search's vector search capabilities.
-*   **Indexing:** Extracted knowledge snippets (from both OpenAPI and Go tests) are converted to embeddings (using Azure OpenAI's embedding models) and indexed within Azure AI Search.
-*   **Retrieval:** User queries are also converted to embeddings. Azure AI Search retrieves the most semantically similar snippets to the query.
+*   **Indexing:** Extracted knowledge snippets (from both OpenAPI and Go tests) are converted to embeddings (using Azure OpenAI's embedding models) and used to fine tune an Expert LLM in Azure AI.
+*   **Retrieval:** The Expert LLM can then be used for accurate user queries about the API. 
 
 ## 4. AI-Powered Dataset Generation: Training, Validation, and Destructive Action Handling (Continued)
 
@@ -268,7 +63,7 @@ Inspired by RAFT, we generate multiple datasets to prepare for fine-tuning:
 *   **Prompt Engineering:** All LLM interactions use carefully designed prompts, specific to each agent and task.  These prompts are crucial for controlling the LLM's behavior and ensuring the quality of the generated data.
 
 *   **Dataset 1: Validation Dataset (Directly from Sources):**
-    *   The Ingestion Agents (OpenAPI and Golang) use their respective prompts to transform the extracted information (from the OpenAPI spec and Go tests) into the `{"messages": [...]}` format required by the Azure OpenAI fine-tuning API. This dataset serves as a baseline for validation.
+    *   The Ingestion Agents (OpenAPI and Golang) use their respective prompts to transform the extracted information (from the OpenAPI spec and Go tests) into the `{"messages": [...]}` format required by the Azure OpenAI fine-tuning API. This dataset serves as a baseline for validation and should be highly accurate as the LLM is only given the structure of the ingested data and asked to turn it into a human readable tuple for fine tuning.
 
 *   **Dataset 2: Training Dataset (Synthetically Generated Variants with Agentic Validation):**
     *   A larger Azure OpenAI model (e.g., `gpt-4`) is used to generate variations of the question-answer pairs in the validation dataset. This expands the training data and improves the LLM's robustness.
@@ -294,11 +89,11 @@ Inspired by RAFT, we generate multiple datasets to prepare for fine-tuning:
 
     *   **Configurable Parameters:**
         *   `max_tokens`: Controls the maximum length of generated variants.
-        *   `batch_size`: Processes data in batches for efficiency.
+        *   `batch_size`: Processes data in batches to tune around token limits.
         *   `epochs`: The number of passes over the validation data.
         *   `checkpoint_file`: Saves intermediate progress and allows resuming.
 
-    *   **Agentic Fast Model Validation (Inspired by RAFT):** This is a crucial step to filter out low-quality or hallucinated variants:
+    *   **Agentic Fast Model Validation (TODO move this to validation section):** This is a crucial step to filter out low-quality or hallucinated variants:
         1.  **Generate Variant:** The larger model generates a variation based on the `variant_generation_prompt`.
         2.  **Get Embeddings:** Obtain embeddings for the generated question, generated answer, and the original context (from the validation dataset).
         3.  **Fast Model Answer:** The appropriate validation agent (either `OpenAPI_ValidationAgent` or `Golang_ValidationAgent`, depending on the source of the original data) is used with its `get_fast_model_response` method, along with the *original context*.
@@ -307,7 +102,7 @@ Inspired by RAFT, we generate multiple datasets to prepare for fine-tuning:
             *   The generated answer's embedding and the fast model's answer embedding.
         5.  **Thresholding:** If *either* similarity score falls below a predefined threshold (`SIMILARITY_THRESHOLD`), the variant is discarded.  This ensures that the generated variants remain grounded in the original information and are consistent with the fast model's understanding.
 
-*   **Dataset 3: Destructive Action Dataset (Human Review):** This dataset focuses on *negative* examples – questions and answers that involve potentially dangerous actions.  This is crucial for training the LLM to *avoid* generating such responses.
+*   **Dataset 3: Destructive Action Dataset (Human Review):** This dataset focuses on *negative* examples – questions and answers that involve potentially dangerous actions.  This is crucial for training the LLM to *avoid* generating such responses to questions unrelated such as: "How do I replace X with Y" doesn't inherently mean to delete X.
 
     *   **Destructive Action Identification:** We use a multi-pronged approach:
         *   **Keyword Matching:** A basic (but essential) check for keywords associated with destructive actions.
@@ -324,7 +119,7 @@ Inspired by RAFT, we generate multiple datasets to prepare for fine-tuning:
                 return False
             ```
 
-        *   **Prompt Injection (During Synthetic Generation):** We *intentionally* prompt the larger model to generate destructive examples.  This is done with a *separate* prompt, and the results are handled with extreme care.
+        *   **Prompt Injection (During Synthetic Generation):** We *intentionally* prompt the larger model to generate destructive examples.  This is done with a *separate* prompt, and the results are handled with extreme care. *Not currently implemented, just an idea around tuning a data set for security analysis*
 
             ```python
             destructive_prompt = """
@@ -348,8 +143,8 @@ Inspired by RAFT, we generate multiple datasets to prepare for fine-tuning:
             """
             ```
 
-        *   **Dedicated Destructive Action Classifier (Optional):** A more sophisticated approach would involve training a separate classifier (potentially a fine-tuned LLM or a traditional machine learning model) specifically to identify destructive actions.  This could be used in addition to keyword matching and prompt injection.
-        *   **Human Review Queue:** All potentially destructive examples (identified by any of the above methods) are added to a queue for *human review*.  This is a critical safety step. These are stored in a separate file for use with review tools mentioned below. 
+        *   **Dedicated Destructive Action Classifier (Optional):** A more sophisticated approach would involve training a separate classifier (potentially a fine-tuned LLM or a traditional machine learning model) specifically to identify destructive actions.  This could be used in addition to keyword matching and prompt injection. *Not currently implemented*
+        *   **Human Review Queue:** All intentionally destructive examples (identified by the standard api usage) are added to a file for *human review*.  This is a critical safety step. These are stored in a separate file for use with review tools mentioned below. 
         *   **Feedback Loop (Simulated):** The results of human review are used to improve the system:
             *   **Improve `is_destructive`:** Add new keywords or refine the logic based on human feedback.
             *   **Train/Fine-tune Classifier:** If a dedicated classifier is used, the human-labeled data is used for training or fine-tuning.
@@ -357,6 +152,7 @@ Inspired by RAFT, we generate multiple datasets to prepare for fine-tuning:
 
 ## 5. Fine-Tuning Process using Azure OpenAI Fine-tuning API:
 
+*TODO: the validation dataset needs to be uploaded and used to fine tune the fast validation LLM for use in the workflow for synthetic dataset generation. 
 *   **Review Destructive Datasets:** Call the `destructive_review_simulator.py` script on the generated destructive dataset, this will prompt an user to review each case and generate an approved set for merging. 
 *   **Merge Datasets:** Call `merge_datasets.py training_file reviewed_destructive_file output_file merge=True` to merge the reviewed destructive dataset with the training dataset.
 *   **Data Upload:** Upload the merged training data and validatation data.
@@ -364,9 +160,9 @@ Inspired by RAFT, we generate multiple datasets to prepare for fine-tuning:
 *   **Model Training:** Azure OpenAI trains the model.
 *   **Model Deployment:** Once training is complete, Azure OpenAI deploys the fine-tuned model to a dedicated endpoint.
 
-## 6. No Separate Validation LLM:
+## 6. Separate Validation LLM:
 
-The validation process is integrated into the data generation phase (using the "fast-model" validation agents).  This eliminates the need for a separate, dedicated validation LLM.
+*TODO: highlight the separate validation LLM and move before the fine tuning step for the expert LLM
 
 ## 7. (Optional) Evaluation After Fine-Tuning:
 

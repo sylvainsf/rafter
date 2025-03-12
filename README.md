@@ -1,4 +1,4 @@
-# Retrieval Augmented Fine-Tuning (RAFT) for Radius: An Agentic, Azure-Powered Implementation
+# Retrieval Augmented Fine-Tuning (RAFT) for Radius: An Agentic, Azure AI Implementation
 
 This project is an implementation of the Retrieval Augmented Fine-Tuning (RAFT) framework, inspired by Cedric Vidal's blog post, ["RAFT: A new way to teach LLMs to be better at RAG."](https://techcommunity.microsoft.com/blog/aiplatformblog/raft-a-new-way-to-teach-llms-to-be-better-at-rag/4084674) We aim to build a highly accurate, reliable, and configurable LLM specifically for the open-source Radius project (github.com/radius-project/radius). Our approach is agentic, leveraging Azure AI services. It currently handles both the Radius OpenAPI specification and Golang tests, with a strong emphasis on safety through a system for handling potentially destructive actions. The primary workflow is implemented in Python, with a supporting (simplified) data ingestion agent in Go. Configuration parameters (max tokens, batch sizes, epochs, checkpoints) are included to handle complex APIs.
 
@@ -40,12 +40,10 @@ We use specialized, independently tuned *agents* for each source type and for va
 
     **To Compile the Go Agent:**
 
-    1.  Save the Go code as `main.go`.
-    2.  Open a terminal in the directory where you saved `main.go`.
-    3.  Run the command: `go build main.go`
-    4.  This will create an executable file named `main` (or `main.exe` on Windows). This is the `GO_AGENT_EXECUTABLE` that the Python code will use.
+    1.  Run the command: `go build main.go`
+    2.  This will create an executable file named `main` (or `main.exe` on Windows). This is the `GO_AGENT_EXECUTABLE` that the Python code will use.
 
-*   **OpenAPI Validation Agent (Python):** This agent implements the *fast-model validation* step, a key component inspired by the RAFT paper. It uses a smaller, faster LLM (e.g., `gpt-35-turbo`) to check the correctness of generated answers against the original context.
+*   **OpenAPI Validation Agent (Python):** This agent implements the *fast-model validation* step, a key component inspired by the RAFT paper. It uses a smaller, faster LLM (e.g., `gpt-35-turbo`) to check the correctness of synthetic training datasets against the agent fine tuned with the validation dataset.
 *   **Golang Validation Agent (Python):** This agent is similar to the OpenAPI validation agent, but its prompt is tailored to understand the context derived from Go tests.
 *   **Agent Tuning:** Each agent is independently tuned for its specific task (e.g., adjusting `max_tokens`).
 *   **User-Specified Sources:** The user provides the paths to the Radius OpenAPI specification file and the directory containing the Go tests.

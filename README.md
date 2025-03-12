@@ -68,7 +68,7 @@ Inspired by RAFT, we generate multiple datasets to prepare for fine-tuning:
     *   **Variant Generation Prompt:**
 
         ```python
-        variant_generation_prompt = f"""
+        variant_generation_prompt = """
         You are a data augmentation agent for an LLM. Generate variations of
         the provided question-answer pair. The variations should:
 
@@ -100,7 +100,7 @@ Inspired by RAFT, we generate multiple datasets to prepare for fine-tuning:
             *   The generated answer's embedding and the fast model's answer embedding.
         5.  **Thresholding:** If *either* similarity score falls below a predefined threshold (`SIMILARITY_THRESHOLD`), the variant is discarded.  This ensures that the generated variants remain grounded in the original information and are consistent with the fast model's understanding.
 
-*   **Dataset 3: Destructive Action Dataset (Human Review):** This dataset focuses on *negative* examples – questions and answers that involve potentially dangerous actions.  This is crucial for training the LLM to *avoid* generating such responses to questions unrelated such as: "How do I replace X with Y" doesn't inherently mean to delete X.
+*   **Dataset 3: Destructive Action Dataset (Human Review):** This dataset focuses on *negative* examples – questions and answers that involve potentially dangerous actions.  This is crucial for training the LLM to *avoid* generating such responses to questions unrelated such as: "How do I replace X with Y" doesn't inherently mean to delete X. The current implementation does create a destructive dataset for human review that only focuses on correctness of expected API usage for destructive actions. The example below is captured from early POC work that I've disabled for now.
 
     *   **Destructive Action Identification:** We use a multi-pronged approach:
         *   **Keyword Matching:** A basic (but essential) check for keywords associated with destructive actions.
